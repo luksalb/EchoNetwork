@@ -1,5 +1,5 @@
+using Echo.Api.Infra.Data;
 using Microsoft.EntityFrameworkCore;
-using XClone.Api.Infra.Data;   
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.

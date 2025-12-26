@@ -1,4 +1,4 @@
-﻿namespace XClone.Api.Domain.Users;
+﻿namespace Echo.Api.Domain.Users;
 
 public class User
 {
