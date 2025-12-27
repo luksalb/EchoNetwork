@@ -1,7 +1,20 @@
-﻿using Microsoft.AspNetCore.Mvc;
+﻿using System.Security.Claims;
+using System.Text;
+using System.Text.RegularExpressions;
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.Tokens;
+using Microsoft.Extensions.Configuration;
+using Microsoft.AspNetCore.Authorization;
 using Echos.Api.Infra.Data;
 using Echos.Api.Domain.Users;
-using Microsoft.EntityFrameworkCore;
+using Echos.Api.Application.Users;
+
+
+
+
 
 namespace Echos.Api.Controllers.Users;
 
@@ -10,51 +23,46 @@ namespace Echos.Api.Controllers.Users;
 public class UsersController : ControllerBase
 {
     private readonly AppDbContext _db;
+    private readonly IConfiguration _configuration;
 
-    public UsersController(AppDbContext db)
+    public UsersController(AppDbContext db, IConfiguration configuration)
     {
         _db = db;
+        _configuration = configuration;
     }
 
+    [AllowAnonymous]
     [HttpPost]
-    public async Task<IActionResult> Create(CreateUserRequest request)
+    public async Task<IActionResult> Create(CreateUserRequest request, [FromServices] UserService service)
     {
-        var userName = request.UserName.Trim().ToLowerInvariant();
-        var email = request.Email.Trim().ToLowerInvariant();
-
-        var exists = await _db.Users.AnyAsync(U => !U.IsDeleted && (U.UserName == userName || U.Email == email));
-
-        if (exists)
+        try
         {
-            return Conflict(new
+            var user = await service.ExecuteAsync(
+                request.UserName,
+                request.Name,
+                request.Email,
+                request.Password
+            );
+
+            return CreatedAtAction(nameof(Create), new
             {
-                message = "Username or Email already in use."
+                user.Id,
+                user.UserName,
+                user.Name,
+                user.Email
             });
         }
-
-        var passwordHash = BCrypt.Net.BCrypt.HashPassword(request.Password);
-
-        var user = new User(
-            userName,
-            request.Name.Trim(),
-            email,
-            passwordHash
-        );
-
-        
-
-        _db.Users.Add(user);
-        await _db.SaveChangesAsync();
-
-        return CreatedAtAction(nameof(Create), new { id = user.Id }, new
+        catch (ArgumentException ex)
         {
-            user.Id,
-            user.UserName,
-            user.Name,
-            user.Email
-        });
+            return BadRequest(new { message = ex.Message });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Conflict(new { message = ex.Message });
+        }
     }
 
+    [AllowAnonymous]
     [HttpPost("login")]
     public async Task<IActionResult> Login(LoginRequest request)
     {
@@ -74,12 +82,43 @@ public class UsersController : ControllerBase
             });
         }
 
+        var claims = new[]
+{
+        new Claim(JwtRegisteredClaimNames.Sub, user.Id.ToString()),
+        new Claim(JwtRegisteredClaimNames.UniqueName, user.UserName),
+        new Claim(JwtRegisteredClaimNames.Email, user.Email)
+};
+
+        var key = new SymmetricSecurityKey(
+            Encoding.UTF8.GetBytes(_configuration["Jwt:Key"]!)
+        );
+
+        var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
+
+        var token = new JwtSecurityToken(
+            issuer: _configuration["Jwt:Issuer"],
+            claims: claims,
+            expires: DateTime.UtcNow.AddHours(2),
+            signingCredentials: creds
+        );
+
+        var jwt = new JwtSecurityTokenHandler().WriteToken(token);
+
         return Ok(new
         {
-            user.Id,
-            user.UserName,
-            user.Name,
-            user.Email
+            accessToken = jwt
+        });
+    }
+
+    [Authorize]
+    [HttpGet("me")]
+    public IActionResult Me()
+    {
+        return Ok(new
+        {
+            UserId = User.FindFirstValue(JwtRegisteredClaimNames.Sub),
+            UserName = User.FindFirstValue(JwtRegisteredClaimNames.UniqueName),
+            Email = User.FindFirstValue(JwtRegisteredClaimNames.Email)
         });
     }
 
